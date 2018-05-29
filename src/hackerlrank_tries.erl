@@ -3,164 +3,96 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% API
--export([main/0, new/0, add/2, find_all/2]).
-
--record(node, {children = #{} :: #{char() := #node{}},
-               value :: string()}).
+-export([new/0, add/2, find_all/2]).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-main() ->
-    {N, _} = string:to_integer(string:chomp(io:get_line(""))),
-
-    lists:foldl(
-      fun(_NItr, Trie) ->
-              case read_contact_op() of
-                  ["add", Contact] ->
-                      add(Contact, Trie);
-                  ["find", Contact] ->
-                      Contacts = find_all(Contact, Trie),
-                      io:format("~p~n", [length(Contacts)]),
-                      Trie
-              end
-      end,
-      new(),
-      lists:seq(1, N)),
-
-    ok.
-
 new() ->
-    #node{}.
+    ets:new(node, []).
 
-add(String, Trie) ->
-    add(String, Trie, String).
+add(String, Node) ->
+    add(String, Node, String).
 
-
-find_all([] = _String, #node{value = undefined, children = Children}) ->
-    swipe(Children);
-find_all([] = _String, #node{value = Value, children = Children}) ->
-    [Value | swipe(Children)];
-find_all([Ch | Suffix], #node{children = Children}) ->
-    case Children of
-        #{Ch := Node} ->
-            find_all(Suffix, Node);
-        _ ->
-            []
+find_all([] = _String, Node) ->
+    swipe(Node);
+find_all([Ch | Suffix], Node) ->
+    case ch_lookup(Node, Ch) of
+        undefined ->
+            [];
+        ChildNode ->
+            find_all(Suffix, ChildNode)
     end.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-add([Ch | Suffix], #node{children = Children} = Node, String) ->
-    case Children of
-        #{Ch := ChildNode} ->
-            NewNode = add(Suffix, ChildNode, String),
-            Node#node{children = Children#{Ch := NewNode}};
-        _ ->
-            NewNode = add(Suffix, #node{}, String),
-            Node#node{children = Children#{Ch => NewNode}}
+ch_lookup(Node, Ch) ->
+    case ets:lookup(Node, {ch, Ch}) of
+        [{_, ChildNode}] ->
+            ChildNode;
+        [] ->
+            undefined
+    end.
+
+set_children(Node, Ch, Value) ->
+    ets:insert(Node, {{ch, Ch}, Value}).
+
+set_value(Node, Value) ->
+    ets:insert(Node, {value, Value}).
+
+add([Ch | Suffix], Node, String) ->
+    case ch_lookup(Node, Ch) of
+        undefined ->
+            ChildNode = new(),
+            set_children(Node, Ch, ChildNode),
+            add(Suffix, ChildNode, String);
+        ChildNode ->
+            add(Suffix, ChildNode, String)
     end;
 add([] = _String, Node, String) ->
-    Node#node{value = String}.
+    set_value(Node, String).
 
-swipe(Children) ->
-    maps:fold(
+swipe(Node) ->
+    ets:foldl(
       fun
-          (_K, #node{value = undefined, children = NodeChildren}, Acc) ->
-              swipe(NodeChildren) ++ Acc;
-          (_K, #node{value = Value, children = NodeChildren}, Acc) ->
-              [Value | swipe(NodeChildren)] ++ Acc
+          ({{ch, _Ch}, ChildNode}, Acc) ->
+              lists:append(swipe(ChildNode), Acc);
+          ({value, Value}, Acc) ->
+              [Value | Acc]
       end,
       [],
-      Children
-     ).
-
-
-read_contact_op() ->
-    Line = string:chomp(io:get_line("")),
-    re:split(Line, "\\s+", [{return, list}, trim]).
+      Node
+    ).
 
 %%%===================================================================
 %%% Eunit test
 %%%===================================================================
 
-tries_add_test_() ->
-    [
-     ?_assertEqual(#node{value = ""}, add("", #node{})),
-     ?_assertEqual(#node{children = #{$a => #node{value = "a"}}},
-                   add("a", #node{})),
-     ?_assertEqual(#node{children =
-                             #{$a => #node{children =
-                                               #{$a => #node{value = "aa"}}}}},
-                   add("aa", #node{})),
-     ?_assertEqual(#node{children =
-                             #{$a => #node{children =
-                                               #{$b => #node{value = "ab"}}}}},
-                   add("ab", #node{})),
-     ?_assertEqual(#node{children = #{$a => #node{value = "a"},
-                                      $b => #node{value = "b"}}},
-                   add("b", add("a", #node{}))),
-     ?_assertEqual(#node{children =
-                             #{$a =>
-                                   #node{
-                                      value = "a",
-                                      children = #{$b => #node{value = "ab"}}}}},
-                   add("ab", add("a", #node{}))),
-     ?_assertEqual(#node{children =
-                             #{$a =>
-                                   #node{
-                                      value = "a",
-                                      children = #{$b => #node{value = "ab"}}}}},
-                   add("a", add("ab", #node{}))),
-     ?_assertEqual(#node{children =
-                             #{$a =>
-                                   #node{value = "a"},
-                               $b =>
-                                   #node{children = #{$a => #node{value = "ba"}}}}},
-                   add("a", add("ba", #node{})))
-    ].
+find_test_def(Strings, Find, Expected) ->
+    {setup,
+     fun new/0,
+     fun(Node) ->
+             Add = fun(Str) -> add(Str, Node) end,
+             lists:foreach(Add, Strings),
+             {lists:flatten(io_lib:format("Add: ~p Find: ~p", [Strings, Find])),
+              ?_assertEqual(Expected, find_all(Find, Node))}
+     end}.
 
 find_all_test_() ->
-    [
-     ?_assertEqual([], find_all("", #node{})),
-     ?_assertEqual([""], find_all("", add("", #node{}))),
-     ?_assertEqual(["a"], find_all("", add("a", #node{}))),
-     ?_assertEqual(["a"], find_all("a", add("a", #node{}))),
-     ?_assertEqual([], find_all("b", add("a", #node{}))),
-     ?_assertEqual(["aa"], find_all("a", add("aa", #node{}))),
-     ?_assertEqual(["ab","aa","aaac"],
-                   find_all("a",
-                            add("aaac",
-                                add("ab",
-                                    add("aa", #node{}))))),
-     ?_assertEqual(["aa","aaac"],
-                   find_all("aa",
-                            add("aaac",
-                                add("ab",
-                                    add("aa", #node{}))))),
-     ?_assertEqual(["aaac"],
-                   find_all("aaa",
-                            add("aaac",
-                                add("ab",
-                                    add("aa", #node{}))))),
-     ?_assertEqual(["aaac"],
-                   find_all("aaac",
-                            add("aaac",
-                                add("ab",
-                                    add("aa", #node{}))))),
-     ?_assertEqual([],
-                   find_all("aaacb",
-                            add("aaac",
-                                add("ab",
-                                    add("aa", #node{}))))),
-     ?_assertEqual(["hack", "hackerrank"],
-                   find_all("hac",
-                            add("hackerrank",
-                                add("hack", #node{})))),
-     ?_assertEqual([],
-                   find_all("hak",
-                            add("hackerrank",
-                                add("hack", #node{}))))
-    ].
+    [find_test_def(Strings, Find, Expected)
+     || {Strings, Find, Expected}
+            <- [{[],                     "",      []},
+                {[""],                   "",      [""]},
+                {["a"],                  "",      ["a"]},
+                {["a"],                  "a",     ["a"]},
+                {["a"],                  "b",     []},
+                {["aa"],                 "a",     ["aa"]},
+                {["aa", "ab", "aaac"],   "a",     ["aaac", "aa", "ab"]},
+                {["aa", "ab", "aaac"],   "aa",    ["aaac", "aa"]},
+                {["aa", "ab", "aaac"],   "aaa",   ["aaac"]},
+                {["aa", "ab", "aaac"],   "aaac",  ["aaac"]},
+                {["aa", "ab", "aaac"],   "aaacb", []},
+                {["hackerrank", "hack"], "hac",   ["hackerrank", "hack"]},
+                {["hackerrank", "hack"], "hak",   []}]].
